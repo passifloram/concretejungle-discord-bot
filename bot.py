@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -34,13 +35,13 @@ HEADERS = {
 
 
 # ==========================================================
-# FONCTIONS
+# OUTILS POUR LES URL
 # ==========================================================
 
 def normaliser_url(href):
     """
-    Transforme une adresse relative en adresse complète et retire
-    les ancres ainsi que les paramètres inutiles.
+    Transforme une URL relative en URL complète.
+    Retire les paramètres et les ancres, notamment #12345.
     """
     url = urljoin(FORUM_URL, href)
     morceaux = urlsplit(url)
@@ -54,9 +55,29 @@ def normaliser_url(href):
     ))
 
 
+def recuperer_id_sujet(url):
+    """
+    Extrait le numéro d'un sujet Forumactif.
+
+    Exemples :
+    /t2355-registre-technique-du-directory -> 2355
+    /t2355p25-registre...                  -> 2355
+    """
+    correspondance = re.search(r"/t(\d+)", url)
+
+    if not correspondance:
+        return None
+
+    return correspondance.group(1)
+
+
+# ==========================================================
+# HISTORIQUE DES SUJETS PUBLIÉS
+# ==========================================================
+
 def charger_historique():
     """
-    Charge les sujets déjà annoncés.
+    Charge les URL déjà annoncées depuis posted.json.
     """
     try:
         with open(POSTED_FILE, "r", encoding="utf-8") as fichier:
@@ -65,38 +86,78 @@ def charger_historique():
         if not isinstance(contenu, list):
             raise ValueError("posted.json ne contient pas une liste.")
 
-        return list(dict.fromkeys(
-            normaliser_url(url)
-            for url in contenu
-            if isinstance(url, str) and url.strip()
-        ))
+        historique = []
+        ids_vus = set()
+
+        for url in contenu:
+            if not isinstance(url, str) or not url.strip():
+                continue
+
+            url_normalisee = normaliser_url(url)
+            id_sujet = recuperer_id_sujet(url_normalisee)
+
+            if not id_sujet:
+                continue
+
+            # Supprime aussi les éventuels anciens doublons
+            # déjà présents dans posted.json.
+            if id_sujet in ids_vus:
+                continue
+
+            ids_vus.add(id_sujet)
+            historique.append(url_normalisee)
+
+        return historique
 
     except FileNotFoundError:
         print("posted.json absent : création d'un nouvel historique.")
         return []
 
     except (json.JSONDecodeError, ValueError) as erreur:
-        print(f"Historique illisible : {erreur}")
-        print("Le bot repart avec un historique vide.")
-        return []
+        raise RuntimeError(
+            f"Impossible de lire posted.json : {erreur}"
+        )
 
 
 def enregistrer_historique(historique):
     """
-    Enregistre les sujets annoncés dans posted.json.
+    Enregistre les sujets publiés sans doublon.
     """
+    historique_nettoye = []
+    ids_vus = set()
+
+    for url in historique:
+        url_normalisee = normaliser_url(url)
+        id_sujet = recuperer_id_sujet(url_normalisee)
+
+        if not id_sujet:
+            continue
+
+        if id_sujet in ids_vus:
+            continue
+
+        ids_vus.add(id_sujet)
+        historique_nettoye.append(url_normalisee)
+
     with open(POSTED_FILE, "w", encoding="utf-8") as fichier:
         json.dump(
-            historique,
+            historique_nettoye,
             fichier,
             ensure_ascii=False,
             indent=2
         )
 
 
+# ==========================================================
+# RÉCUPÉRATION DES SUJETS DE ROLL CALL
+# ==========================================================
+
 def recuperer_sujets():
     """
-    Charge Roll Call et récupère les sujets visibles.
+    Charge Roll Call et récupère les liens de sujets.
+
+    Le bot reconnaît les sujets grâce à leur URL /tNUMERO,
+    sans dépendre des classes HTML variables de Forumactif.
     """
     session = requests.Session()
     session.headers.update(HEADERS)
@@ -117,17 +178,19 @@ def recuperer_sujets():
 
     soup = BeautifulSoup(reponse.text, "html.parser")
 
-    # Sélecteur habituel de Forumactif, avec quelques solutions
-    # de secours si la structure HTML varie.
-    liens = soup.select(
-        "a.topictitle, "
-        ".topicslist_row a[href*='/t'], "
-        ".topic-title a[href*='/t'], "
-        "a[href^='/t'][class*='topic']"
+    # Recherche les liens correspondant aux sujets Forumactif :
+    # /t2355-nom-du-sujet
+    # t2355-nom-du-sujet
+    # https://concretejungle.forumactif.com/t2355-nom-du-sujet
+    liens = soup.find_all(
+        "a",
+        href=re.compile(
+            r"^(?:https?://concretejungle\.forumactif\.com)?/?t\d+"
+        )
     )
 
     sujets = []
-    urls_vues = set()
+    ids_vus = set()
 
     for lien in liens:
         titre = lien.get_text(" ", strip=True)
@@ -137,43 +200,60 @@ def recuperer_sujets():
             continue
 
         url = normaliser_url(href)
+        id_sujet = recuperer_id_sujet(url)
 
-        # On conserve uniquement les véritables sujets du forum.
+        if not id_sujet:
+            continue
+
         if not url.startswith(f"{FORUM_URL}/t"):
             continue
 
-        if url in urls_vues:
+        # Un même sujet peut être lié plusieurs fois dans le HTML.
+        # Son identifiant numérique garantit qu'il ne sera gardé
+        # qu'une seule fois.
+        if id_sujet in ids_vus:
             continue
 
-        urls_vues.add(url)
+        ids_vus.add(id_sujet)
 
         sujets.append({
+            "id": id_sujet,
             "title": titre,
             "link": url
         })
 
-    print(f"Nombre de sujets détectés : {len(sujets)}")
+    print(f"Nombre de sujets uniques détectés : {len(sujets)}")
 
     for sujet in sujets:
-        print(f"— {sujet['title']} : {sujet['link']}")
+        print(
+            f"— Sujet #{sujet['id']} : "
+            f"{sujet['title']} — {sujet['link']}"
+        )
 
     if not sujets:
-        titre_page = soup.title.get_text(" ", strip=True) if soup.title else "inconnu"
+        titre_page = (
+            soup.title.get_text(" ", strip=True)
+            if soup.title
+            else "inconnu"
+        )
 
         print(f"Titre de la page reçue : {titre_page}")
 
         raise RuntimeError(
             "Aucun sujet n'a été détecté dans Roll Call. "
-            "Forumactif a peut-être renvoyé une page de connexion, "
-            "une protection anti-bot ou une structure HTML différente."
+            "Forumactif a peut-être renvoyé une page différente."
         )
 
     return sujets
 
 
+# ==========================================================
+# PUBLICATION SUR DISCORD
+# ==========================================================
+
 def publier_sur_discord(sujet):
     """
-    Publie un sujet sur Discord et vérifie réellement la réponse.
+    Envoie l'annonce et vérifie que Discord l'a acceptée.
     """
     if not DISCORD_WEBHOOK:
         raise RuntimeError(
@@ -223,51 +303,73 @@ def publier_sur_discord(sujet):
     )
 
     print(
-        f"Réponse Discord pour « {sujet['title']} » : "
-        f"{reponse.status_code}"
+        f"Réponse Discord pour le sujet "
+        f"#{sujet['id']} : {reponse.status_code}"
     )
 
     if reponse.status_code not in (200, 204):
         raise RuntimeError(
-            f"Discord a refusé le message : "
+            f"Discord a refusé le message du sujet "
+            f"#{sujet['id']} : "
             f"{reponse.status_code} — {reponse.text[:500]}"
         )
 
 
 # ==========================================================
-# LANCEMENT DU BOT
+# LANCEMENT
 # ==========================================================
 
 def main():
     historique = charger_historique()
-    deja_annonces = set(historique)
+
+    ids_deja_annonces = {
+        recuperer_id_sujet(url)
+        for url in historique
+        if recuperer_id_sujet(url)
+    }
+
+    print(
+        f"Nombre de sujets dans l'historique : "
+        f"{len(ids_deja_annonces)}"
+    )
 
     sujets = recuperer_sujets()
 
     nouveaux_sujets = [
         sujet
         for sujet in sujets
-        if sujet["link"] not in deja_annonces
+        if sujet["id"] not in ids_deja_annonces
     ]
 
-    print(f"Nouveaux sujets à annoncer : {len(nouveaux_sujets)}")
+    print(
+        f"Nombre de nouveaux sujets à annoncer : "
+        f"{len(nouveaux_sujets)}"
+    )
 
     if not nouveaux_sujets:
-        print("Aucune nouvelle annonce à publier.")
+        print("Aucun nouveau sujet à publier.")
         return
 
-    # reversed() permet d'envoyer les sujets du plus ancien au plus récent.
+    # Publication du plus ancien au plus récent.
     for sujet in reversed(nouveaux_sujets):
-        print(f"Publication de : {sujet['title']}")
+        print(
+            f"Publication du sujet #{sujet['id']} : "
+            f"{sujet['title']}"
+        )
 
         publier_sur_discord(sujet)
 
-        # Le lien n'est enregistré qu'après confirmation de Discord.
+        # Le sujet est mémorisé uniquement après confirmation
+        # de sa publication par Discord.
         historique.append(sujet["link"])
-        deja_annonces.add(sujet["link"])
+        ids_deja_annonces.add(sujet["id"])
+
         enregistrer_historique(historique)
 
-        print(f"Annonce publiée : {sujet['link']}")
+        print(
+            f"Sujet #{sujet['id']} publié et "
+            f"ajouté à l'historique."
+        )
 
     print("Toutes les nouvelles annonces ont été publiées.")
 
