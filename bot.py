@@ -1,3 +1,4 @@
+
 import requests
 from bs4 import BeautifulSoup
 import os
@@ -5,7 +6,13 @@ import json
 from datetime import datetime
 
 
-WEBHOOK = os.getenv("DISCORD_WEBHOOK")
+WEBHOOKS = [
+    os.getenv("DISCORD_WEBHOOK"),
+    os.getenv("DISCORD_WEBHOOK_2")
+]
+
+WEBHOOKS = [webhook for webhook in WEBHOOKS if webhook]
+
 url = "https://concretejungle.forumactif.com/f11-roll-call"
 headers = {
     "User-Agent": "Mozilla/5.0"
@@ -13,6 +20,8 @@ headers = {
 
 
 r = requests.get(url, headers=headers)
+r.raise_for_status()
+
 soup = BeautifulSoup(r.text, "html.parser")
 topics = soup.select("a.topictitle")
 
@@ -20,7 +29,7 @@ topics = soup.select("a.topictitle")
 try:
     with open("posted.json", "r") as f:
         posted = json.load(f)
-except:
+except (FileNotFoundError, json.JSONDecodeError):
     posted = []
 
 
@@ -37,7 +46,7 @@ for topic in topics:
                 "link": link
             })
 
-    except:
+    except (KeyError, TypeError):
         continue
 
 
@@ -75,8 +84,22 @@ for post in reversed(new_posts):
         ]
     }
 
-    requests.post(WEBHOOK, json=data)
-    posted.append(post["link"])
+    all_sent = True
+
+    for webhook in WEBHOOKS:
+        try:
+            response = requests.post(
+                webhook,
+                json=data,
+                timeout=15
+            )
+            response.raise_for_status()
+        except requests.RequestException as e:
+            print(f"Erreur lors de l'envoi Discord : {e}")
+            all_sent = False
+
+    if all_sent and WEBHOOKS:
+        posted.append(post["link"])
 
 
 with open("posted.json", "w") as f:
