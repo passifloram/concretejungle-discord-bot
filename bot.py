@@ -8,7 +8,7 @@ from datetime import datetime
 
 WEBHOOKS = [
     os.getenv("DISCORD_WEBHOOK"),
-    os.getenv("DISCORD_WEBHOOK_2")
+    os.getenv("DISCORD_WEBHOOK2")
 ]
 
 WEBHOOKS = [webhook for webhook in WEBHOOKS if webhook]
