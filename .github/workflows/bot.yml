@@ -24,7 +24,7 @@ jobs:
         run: python bot.py
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          DISCORD_WEBHOOK_2: ${{ secrets.DISCORD_WEBHOOK2 }}
+          DISCORD_WEBHOOK2: ${{ secrets.DISCORD_WEBHOOK2 }}
 
       - name: Commit history
         run: |
