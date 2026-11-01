@@ -6,12 +6,11 @@ import json
 from datetime import datetime
 
 
-WEBHOOKS = [
-    os.getenv("DISCORD_WEBHOOK"),
-    os.getenv("DISCORD_WEBHOOK2")
-]
+# Seul le second webhook est utilisé. Aucun repli vers l'ancien.
+WEBHOOK = os.getenv("DISCORD_WEBHOOK2", "").strip()
+if not WEBHOOK:
+    raise SystemExit("Le secret DISCORD_WEBHOOK2 est absent ou vide.")
 
-WEBHOOKS = [webhook for webhook in WEBHOOKS if webhook]
 
 url = "https://concretejungle.forumactif.com/f11-roll-call"
 headers = {
@@ -84,22 +83,19 @@ for post in reversed(new_posts):
         ]
     }
 
-    all_sent = True
+    try:
+        response = requests.post(WEBHOOK, json=data, timeout=15)
+        response.raise_for_status()
+    except requests.RequestException as error:
+        # Ne pas afficher l'URL du webhook, qui contient son jeton.
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        detail = f"HTTP {status}" if status is not None else type(error).__name__
+        print(f"Envoi Discord non confirmé ({detail}) : sujet conservé pour un prochain passage.")
+        continue
 
-    for webhook in WEBHOOKS:
-        try:
-            response = requests.post(
-                webhook,
-                json=data,
-                timeout=15
-            )
-            response.raise_for_status()
-        except requests.RequestException as e:
-            print(f"Erreur lors de l'envoi Discord : {e}")
-            all_sent = False
+    # Le seul envoi requis a réussi : ne pas republier ce sujet.
+    posted.append(post["link"])
 
-    if all_sent and WEBHOOKS:
-        posted.append(post["link"])
 
 
 with open("posted.json", "w") as f:
