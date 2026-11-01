@@ -3,6 +3,10 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+# Évite deux exécutions simultanées utilisant le même historique.
+concurrency:
+  group: elphaba-bot
+  cancel-in-progress: false
 permissions:
   contents: write
 jobs:
@@ -23,7 +27,6 @@ jobs:
       - name: Run bot
         run: python bot.py
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           DISCORD_WEBHOOK2: ${{ secrets.DISCORD_WEBHOOK2 }}
 
       - name: Commit history
